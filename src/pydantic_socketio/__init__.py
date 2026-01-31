@@ -15,6 +15,8 @@ from .wrapper import (
     get_event_name as get_event_name,
     AsyncClientWrapper as AsyncClientWrapper,
     AsyncServerWrapper as AsyncServerWrapper,
+    AsyncSimpleClientWrapper as AsyncSimpleClientWrapper,
+    SimpleClientWrapper as SimpleClientWrapper,
     SyncClientWrapper as SyncClientWrapper,
     SyncServerWrapper as SyncServerWrapper,
 )

@@ -12,6 +12,8 @@ A Pydantic-enhanced SocketIO library for Python, with FastAPI integration.
 
 ⭐️ **Pydantic-Enhanced SocketIO**: Drop-in replacements for the original [python-socketio](https://github.com/miguelgrinberg/python-socketio) server and client (sync and async), with built-in Pydantic validation for event data. You can also easily monkey patch this validation to the original `socketio` server and client.
 
+🎯 **Typed Wrapper API**: Wrap any existing socketio instance with fully typed `emit`, `call`, and handler registration. Automatic event name derivation from model class names, typed responses with `response_model`, and FastAPI-style validation from type hints.
+
 🪐 **Easy Integration with FastAPI**: Seamlessly integrates `Socket.IO` with FastAPI, allowing you to manage event-driven communication effortlessly.
 
 
@@ -95,6 +97,116 @@ def handle_pong(data: int):
     ...
 ```
 
+
+### Typed Wrapper API
+
+The typed wrapper provides a non-intrusive way to add typed emit/call methods to any existing socketio instance:
+
+```python
+from pydantic import BaseModel
+from pydantic_socketio import wrap
+import socketio
+
+class Ping(BaseModel):
+    message: str
+
+class Pong(BaseModel):
+    reply: str
+
+# Wrap any existing socketio instance (tsio = typed socketio)
+tsio = wrap(socketio.AsyncClient())
+
+# Emit with automatic event name derivation (Ping -> "ping")
+await tsio.emit(Ping(message="Hello, World!"))
+
+# Emit with explicit event name
+await tsio.emit("my-ping", Ping(message="Hello, World!"))
+
+# Call with typed response
+response = await tsio.call(Ping(message="Hello"), response_model=Pong)
+# response is typed as Pong
+
+# Handler registration with validation from type hints
+@tsio.on(Ping)  # Event name derived from Ping -> "ping"
+async def handle_ping(data: Ping) -> Pong:
+    return Pong(reply=data.message)
+
+# Or use @tsio.event with function name as event name
+@tsio.event
+async def ping(data: Ping) -> Pong:
+    return Pong(reply=data.message)
+```
+
+#### Union Response Types
+
+You can use union types for responses that may return different models:
+
+```python
+from typing import Annotated, Literal
+from pydantic import BaseModel, Discriminator
+
+class Success(BaseModel):
+    kind: Literal["success"] = "success"
+    data: str
+
+class Error(BaseModel):
+    kind: Literal["error"] = "error"
+    message: str
+
+# Simple union (Pydantic uses smart matching)
+response = await tsio.call(request, response_model=Success | Error)
+
+# Discriminated union for reliable matching
+ResponseType = Annotated[Success | Error, Discriminator("kind")]
+response = await tsio.call(request, response_model=ResponseType)
+```
+
+#### Custom Event Names
+
+By default, event names are derived from model class names in snake_case. You can override this:
+
+```python
+from typing import ClassVar
+
+class CustomEvent(BaseModel):
+    event_name: ClassVar[str] = "my_custom_event"
+    data: str
+
+# Uses "my_custom_event" instead of "custom_event"
+await tsio.emit(CustomEvent(data="hello"))
+```
+
+#### SimpleClient Support
+
+The wrapper also supports `SimpleClient` and `AsyncSimpleClient`, which use `receive()` instead of event handlers:
+
+```python
+from pydantic import BaseModel
+from pydantic_socketio import wrap
+import socketio
+
+class Ping(BaseModel):
+    message: str
+
+class Pong(BaseModel):
+    reply: str
+
+# Wrap a SimpleClient
+tsio = wrap(socketio.SimpleClient())
+tsio.connect("http://localhost:5000")
+
+# Emit with typed model
+tsio.emit(Ping(message="Hello"))
+
+# Call with typed response
+response = tsio.call(Ping(message="Hello"), response_model=Pong)
+
+# Receive with typed response - returns (event_name, validated_data)
+event_name, data = tsio.receive(response_model=Pong)
+print(f"Received {event_name}: {data.reply}")
+
+tsio.disconnect()
+```
 
 ### Alternative: Monkey Patching for Original SocketIO
 

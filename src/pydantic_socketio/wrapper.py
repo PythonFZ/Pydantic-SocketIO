@@ -4,6 +4,10 @@ This module provides a thin wrapper around socketio instances that adds:
 - Typed emit/call methods with automatic event name derivation
 - Handler registration with Pydantic validation from type hints
 - Support for union and discriminated union response types
+
+Note on Union Types (PEP 747):
+    The response_model parameter uses TypeForm[T] from PEP 747 for type inference.
+    See: https://peps.python.org/pep-0747/
 """
 
 from __future__ import annotations
@@ -20,7 +24,15 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter, validate_call
 from pydantic_core import to_jsonable_python
-from socketio import AsyncClient, AsyncServer, Client, Server
+from socketio import (
+    AsyncClient,
+    AsyncServer,
+    AsyncSimpleClient,
+    Client,
+    Server,
+    SimpleClient,
+)
+from typing_extensions import TypeForm
 
 T = TypeVar("T")
 
@@ -93,12 +105,12 @@ def _resolve_emit_args(event: str | BaseModel, data: Any = None) -> tuple[str, A
     return event, to_jsonable_python(data) if isinstance(data, BaseModel) else data
 
 
-def _validate_response(response: Any, response_model: Type[T] | None) -> T | Any:
+def _validate_response(response: Any, response_model: TypeForm[T] | None) -> T | Any:
     """Validate response against response_model if provided.
 
     Args:
         response: The raw response from socketio.
-        response_model: Optional Pydantic model type or union type.
+        response_model: Optional type form (single type, union, or Annotated).
 
     Returns:
         Validated response if response_model is provided, otherwise raw response.
@@ -219,23 +231,29 @@ class AsyncClientWrapper:
         event_name, payload = _resolve_emit_args(event, data)
         await self._sio.emit(event_name, payload, **kwargs)
 
-    # call overloads
     @overload
     async def call(
         self,
         event: BaseModel,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
     @overload
     async def call(
         self,
+        event: BaseModel,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    @overload
+    async def call(
+        self,
         event: str,
-        data: BaseModel,
+        data: Any = None,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
@@ -252,15 +270,15 @@ class AsyncClientWrapper:
         event: str | BaseModel,
         data: Any = None,
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any = None,
         **kwargs: Any,
-    ) -> T | Any:
+    ) -> Any:
         """Emit an event and wait for a response.
 
         Args:
             event: Either a string event name or a BaseModel instance.
             data: Optional data payload (used when event is a string).
-            response_model: Optional Pydantic model type to validate response.
+            response_model: Optional type to validate response against (PEP 747 TypeForm).
             **kwargs: Additional arguments passed to socketio's call.
 
         Returns:
@@ -270,25 +288,32 @@ class AsyncClientWrapper:
         response = await self._sio.call(event_name, payload, **kwargs)
         return _validate_response(response, response_model)
 
-    # on overloads
-    @overload
-    def on(self, event: Type[BaseModel]) -> Callable[[Callable], Callable]: ...
-
-    @overload
-    def on(self, event: str) -> Callable[[Callable], Callable]: ...
-
-    def on(self, event: str | Type[BaseModel]) -> Callable[[Callable], Callable]:
+    def on(
+        self,
+        event: str | Type[BaseModel],
+        handler: Callable | None = None,
+        **kwargs: Any,
+    ) -> Callable[[Callable], Callable] | Callable:
         """Register an event handler.
+
+        Can be used as a decorator or called directly with a handler.
 
         Args:
             event: Either a string event name or a BaseModel class.
                 If BaseModel class, event name is derived from the class name.
+            handler: Optional handler function (if not using as decorator).
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
-            Decorator that registers the handler with validation.
+            Decorator that registers the handler with validation, or the handler
+            if called directly.
 
         Example:
-            >>> @sio.on(Ping)
+            >>> @tsio.on(Ping)
+            ... async def handle_ping(data: Ping) -> Pong:
+            ...     return Pong(reply=data.message)
+
+            >>> @tsio.on(Ping, namespace='/chat')
             ... async def handle_ping(data: Ping) -> Pong:
             ...     return Pong(reply=data.message)
         """
@@ -299,12 +324,14 @@ class AsyncClientWrapper:
 
         def decorator(handler: Callable) -> Callable:
             wrapped = _create_async_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped)
+            self._sio.on(event_name, wrapped, **kwargs)
             return handler
 
+        if handler is not None:
+            return decorator(handler)
         return decorator
 
-    def event(self, handler: Callable) -> Callable:
+    def event(self, handler: Callable | None = None, **kwargs: Any) -> Callable:
         """Register an event handler using the function name as the event name.
 
         This decorator uses the function name directly as the event name and
@@ -312,19 +339,30 @@ class AsyncClientWrapper:
 
         Args:
             handler: The event handler function.
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             The original handler (unmodified).
 
         Example:
-            >>> @sio.event
+            >>> @tsio.event
+            ... async def ping(data: Ping) -> Pong:
+            ...     return Pong(reply=data.message)
+
+            >>> @tsio.event(namespace='/chat')
             ... async def ping(data: Ping) -> Pong:
             ...     return Pong(reply=data.message)
         """
-        event_name = handler.__name__
-        wrapped = _create_async_handler_wrapper(handler)
-        self._sio.on(event_name, wrapped)
-        return handler
+
+        def decorator(handler: Callable) -> Callable:
+            event_name = handler.__name__
+            wrapped = _create_async_handler_wrapper(handler)
+            self._sio.on(event_name, wrapped, **kwargs)
+            return handler
+
+        if handler is not None:
+            return decorator(handler)
+        return decorator
 
 
 # =============================================================================
@@ -383,23 +421,30 @@ class AsyncServerWrapper:
         event_name, payload = _resolve_emit_args(event, data)
         await self._sio.emit(event_name, payload, **kwargs)
 
-    # call overloads
+    # call overloads (see PEP 747 note in AsyncClientWrapper)
     @overload
     async def call(
         self,
         event: BaseModel,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
     @overload
     async def call(
         self,
+        event: BaseModel,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    @overload
+    async def call(
+        self,
         event: str,
-        data: BaseModel,
+        data: Any = None,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
@@ -416,7 +461,7 @@ class AsyncServerWrapper:
         event: str | BaseModel,
         data: Any = None,
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any = None,
         **kwargs: Any,
     ) -> T | Any:
         """Emit an event and wait for a response from a client.
@@ -434,18 +479,18 @@ class AsyncServerWrapper:
         response = await self._sio.call(event_name, payload, **kwargs)
         return _validate_response(response, response_model)
 
-    # on overloads
-    @overload
-    def on(self, event: Type[BaseModel]) -> Callable[[Callable], Callable]: ...
-
-    @overload
-    def on(self, event: str) -> Callable[[Callable], Callable]: ...
-
-    def on(self, event: str | Type[BaseModel]) -> Callable[[Callable], Callable]:
+    def on(
+        self,
+        event: str | Type[BaseModel],
+        handler: Callable | None = None,
+        **kwargs: Any,
+    ) -> Callable[[Callable], Callable] | Callable:
         """Register an event handler.
 
         Args:
             event: Either a string event name or a BaseModel class.
+            handler: Optional handler function (if not using as decorator).
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             Decorator that registers the handler with validation.
@@ -457,29 +502,33 @@ class AsyncServerWrapper:
 
         def decorator(handler: Callable) -> Callable:
             wrapped = _create_async_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped)
+            self._sio.on(event_name, wrapped, **kwargs)
             return handler
 
+        if handler is not None:
+            return decorator(handler)
         return decorator
 
-    def event(self, handler: Callable) -> Callable:
+    def event(self, handler: Callable | None = None, **kwargs: Any) -> Callable:
         """Register an event handler using the function name as the event name.
 
         Args:
             handler: The event handler function.
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             The original handler (unmodified).
-
-        Example:
-            >>> @sio.event
-            ... async def ping(data: Ping) -> Pong:
-            ...     return Pong(reply=data.message)
         """
-        event_name = handler.__name__
-        wrapped = _create_async_handler_wrapper(handler)
-        self._sio.on(event_name, wrapped)
-        return handler
+
+        def decorator(handler: Callable) -> Callable:
+            event_name = handler.__name__
+            wrapped = _create_async_handler_wrapper(handler)
+            self._sio.on(event_name, wrapped, **kwargs)
+            return handler
+
+        if handler is not None:
+            return decorator(handler)
+        return decorator
 
 
 # =============================================================================
@@ -538,23 +587,29 @@ class SyncClientWrapper:
         event_name, payload = _resolve_emit_args(event, data)
         self._sio.emit(event_name, payload, **kwargs)
 
-    # call overloads
     @overload
     def call(
         self,
         event: BaseModel,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
     @overload
     def call(
         self,
+        event: BaseModel,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    @overload
+    def call(
+        self,
         event: str,
-        data: BaseModel,
+        data: Any = None,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
@@ -571,15 +626,15 @@ class SyncClientWrapper:
         event: str | BaseModel,
         data: Any = None,
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any = None,
         **kwargs: Any,
-    ) -> T | Any:
+    ) -> Any:
         """Emit an event and wait for a response.
 
         Args:
             event: Either a string event name or a BaseModel instance.
             data: Optional data payload (used when event is a string).
-            response_model: Optional Pydantic model type to validate response.
+            response_model: Optional type to validate response against (PEP 747 TypeForm).
             **kwargs: Additional arguments passed to socketio's call.
 
         Returns:
@@ -589,18 +644,18 @@ class SyncClientWrapper:
         response = self._sio.call(event_name, payload, **kwargs)
         return _validate_response(response, response_model)
 
-    # on overloads
-    @overload
-    def on(self, event: Type[BaseModel]) -> Callable[[Callable], Callable]: ...
-
-    @overload
-    def on(self, event: str) -> Callable[[Callable], Callable]: ...
-
-    def on(self, event: str | Type[BaseModel]) -> Callable[[Callable], Callable]:
+    def on(
+        self,
+        event: str | Type[BaseModel],
+        handler: Callable | None = None,
+        **kwargs: Any,
+    ) -> Callable[[Callable], Callable] | Callable:
         """Register an event handler.
 
         Args:
             event: Either a string event name or a BaseModel class.
+            handler: Optional handler function (if not using as decorator).
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             Decorator that registers the handler with validation.
@@ -612,29 +667,364 @@ class SyncClientWrapper:
 
         def decorator(handler: Callable) -> Callable:
             wrapped = _create_sync_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped)
+            self._sio.on(event_name, wrapped, **kwargs)
             return handler
 
+        if handler is not None:
+            return decorator(handler)
         return decorator
 
-    def event(self, handler: Callable) -> Callable:
+    def event(self, handler: Callable | None = None, **kwargs: Any) -> Callable:
         """Register an event handler using the function name as the event name.
 
         Args:
             handler: The event handler function.
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             The original handler (unmodified).
-
-        Example:
-            >>> @sio.event
-            ... def ping(data: Ping) -> Pong:
-            ...     return Pong(reply=data.message)
         """
-        event_name = handler.__name__
-        wrapped = _create_sync_handler_wrapper(handler)
-        self._sio.on(event_name, wrapped)
-        return handler
+
+        def decorator(handler: Callable) -> Callable:
+            event_name = handler.__name__
+            wrapped = _create_sync_handler_wrapper(handler)
+            self._sio.on(event_name, wrapped, **kwargs)
+            return handler
+
+        if handler is not None:
+            return decorator(handler)
+        return decorator
+
+
+# =============================================================================
+# Async Simple Client Wrapper
+# =============================================================================
+
+
+class AsyncSimpleClientWrapper:
+    """Typed wrapper for socketio.AsyncSimpleClient.
+
+    Provides typed emit, call, and receive methods while passing through all
+    other attributes to the underlying AsyncSimpleClient instance.
+
+    The SimpleClient API uses receive() instead of event handlers, making it
+    ideal for testing and simple scripts.
+
+    Example:
+        >>> import socketio
+        >>> from pydantic_socketio import wrap
+        >>> tsio = wrap(socketio.AsyncSimpleClient())
+        >>> await tsio.connect('http://localhost:5000')
+        >>> await tsio.emit(Ping(message="hello"))
+        >>> event_name, data = await tsio.receive(response_model=Pong)
+    """
+
+    def __init__(self, sio: AsyncSimpleClient) -> None:
+        """Initialize wrapper with an AsyncSimpleClient instance.
+
+        Args:
+            sio: The socketio AsyncSimpleClient to wrap.
+        """
+        self._sio = sio
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate attribute access to the underlying socketio instance."""
+        return getattr(self._sio, name)
+
+    # emit overloads
+    @overload
+    async def emit(
+        self,
+        event: BaseModel,
+    ) -> None: ...
+
+    @overload
+    async def emit(
+        self,
+        event: str,
+        data: Any = None,
+    ) -> None: ...
+
+    async def emit(
+        self,
+        event: str | BaseModel,
+        data: Any = None,
+    ) -> None:
+        """Emit an event to the server.
+
+        Args:
+            event: Either a string event name or a BaseModel instance.
+                If BaseModel, event name is derived from the class name.
+            data: Optional data payload (used when event is a string).
+        """
+        event_name, payload = _resolve_emit_args(event, data)
+        await self._sio.emit(event_name, payload)
+
+    # call overloads
+    @overload
+    async def call(
+        self,
+        event: BaseModel,
+        *,
+        response_model: TypeForm[T],
+        timeout: int = 60,
+    ) -> T: ...
+
+    @overload
+    async def call(
+        self,
+        event: BaseModel,
+        *,
+        timeout: int = 60,
+    ) -> Any: ...
+
+    @overload
+    async def call(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        response_model: TypeForm[T],
+        timeout: int = 60,
+    ) -> T: ...
+
+    @overload
+    async def call(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        timeout: int = 60,
+    ) -> Any: ...
+
+    async def call(
+        self,
+        event: str | BaseModel,
+        data: Any = None,
+        *,
+        response_model: Any = None,
+        timeout: int = 60,
+    ) -> Any:
+        """Emit an event and wait for a response.
+
+        Args:
+            event: Either a string event name or a BaseModel instance.
+            data: Optional data payload (used when event is a string).
+            response_model: Optional type to validate response against (PEP 747 TypeForm).
+            timeout: Timeout in seconds (default 60).
+
+        Returns:
+            Validated response if response_model is provided, otherwise raw response.
+        """
+        event_name, payload = _resolve_emit_args(event, data)
+        response = await self._sio.call(event_name, payload, timeout=timeout)
+        return _validate_response(response, response_model)
+
+    # receive overloads
+    @overload
+    async def receive(
+        self,
+        *,
+        response_model: TypeForm[T],
+        timeout: float | None = None,
+    ) -> tuple[str, T]: ...
+
+    @overload
+    async def receive(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> tuple[str, Any]: ...
+
+    async def receive(
+        self,
+        *,
+        response_model: Any = None,
+        timeout: float | None = None,
+    ) -> tuple[str, Any]:
+        """Wait for an event from the server.
+
+        Args:
+            response_model: Optional type to validate the event data against.
+            timeout: Timeout in seconds (None for no timeout).
+
+        Returns:
+            Tuple of (event_name, validated_data). If response_model is provided,
+            the data is validated against it.
+
+        Raises:
+            TimeoutError: If timeout is reached before receiving an event.
+        """
+        result = await self._sio.receive(timeout=timeout)
+        event_name = result[0]
+        # SimpleClient receive returns [event_name, *args]
+        event_data = result[1] if len(result) > 1 else None
+        validated_data = _validate_response(event_data, response_model)
+        return event_name, validated_data
+
+
+# =============================================================================
+# Simple Client Wrapper
+# =============================================================================
+
+
+class SimpleClientWrapper:
+    """Typed wrapper for socketio.SimpleClient.
+
+    Provides typed emit, call, and receive methods while passing through all
+    other attributes to the underlying SimpleClient instance.
+
+    The SimpleClient API uses receive() instead of event handlers, making it
+    ideal for testing and simple scripts.
+
+    Example:
+        >>> import socketio
+        >>> from pydantic_socketio import wrap
+        >>> tsio = wrap(socketio.SimpleClient())
+        >>> tsio.connect('http://localhost:5000')
+        >>> tsio.emit(Ping(message="hello"))
+        >>> event_name, data = tsio.receive(response_model=Pong)
+    """
+
+    def __init__(self, sio: SimpleClient) -> None:
+        """Initialize wrapper with a SimpleClient instance.
+
+        Args:
+            sio: The socketio SimpleClient to wrap.
+        """
+        self._sio = sio
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate attribute access to the underlying socketio instance."""
+        return getattr(self._sio, name)
+
+    @overload
+    def emit(
+        self,
+        event: BaseModel,
+    ) -> None: ...
+
+    @overload
+    def emit(
+        self,
+        event: str,
+        data: Any = None,
+    ) -> None: ...
+
+    def emit(
+        self,
+        event: str | BaseModel,
+        data: Any = None,
+    ) -> None:
+        """Emit an event to the server.
+
+        Args:
+            event: Either a string event name or a BaseModel instance.
+                If BaseModel, event name is derived from the class name.
+            data: Optional data payload (used when event is a string).
+        """
+        event_name, payload = _resolve_emit_args(event, data)
+        self._sio.emit(event_name, payload)
+
+    @overload
+    def call(
+        self,
+        event: BaseModel,
+        *,
+        response_model: TypeForm[T],
+        timeout: int = 60,
+    ) -> T: ...
+
+    @overload
+    def call(
+        self,
+        event: BaseModel,
+        *,
+        timeout: int = 60,
+    ) -> Any: ...
+
+    @overload
+    def call(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        response_model: TypeForm[T],
+        timeout: int = 60,
+    ) -> T: ...
+
+    @overload
+    def call(
+        self,
+        event: str,
+        data: Any = None,
+        *,
+        timeout: int = 60,
+    ) -> Any: ...
+
+    def call(
+        self,
+        event: str | BaseModel,
+        data: Any = None,
+        *,
+        response_model: Any = None,
+        timeout: int = 60,
+    ) -> Any:
+        """Emit an event and wait for a response.
+
+        Args:
+            event: Either a string event name or a BaseModel instance.
+            data: Optional data payload (used when event is a string).
+            response_model: Optional type to validate response against (PEP 747 TypeForm).
+            timeout: Timeout in seconds (default 60).
+
+        Returns:
+            Validated response if response_model is provided, otherwise raw response.
+        """
+        event_name, payload = _resolve_emit_args(event, data)
+        response = self._sio.call(event_name, payload, timeout=timeout)
+        return _validate_response(response, response_model)
+
+    @overload
+    def receive(
+        self,
+        *,
+        response_model: TypeForm[T],
+        timeout: float | None = None,
+    ) -> tuple[str, T]: ...
+
+    @overload
+    def receive(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> tuple[str, Any]: ...
+
+    def receive(
+        self,
+        *,
+        response_model: Any = None,
+        timeout: float | None = None,
+    ) -> tuple[str, Any]:
+        """Wait for an event from the server.
+
+        Args:
+            response_model: Optional type to validate the event data against.
+            timeout: Timeout in seconds (None for no timeout).
+
+        Returns:
+            Tuple of (event_name, validated_data). If response_model is provided,
+            the data is validated against it.
+
+        Raises:
+            TimeoutError: If timeout is reached before receiving an event.
+        """
+        result = self._sio.receive(timeout=timeout)
+        event_name = result[0]
+        # SimpleClient receive returns [event_name, *args]
+        event_data = result[1] if len(result) > 1 else None
+        validated_data = _validate_response(event_data, response_model)
+        return event_name, validated_data
 
 
 # =============================================================================
@@ -693,23 +1083,30 @@ class SyncServerWrapper:
         event_name, payload = _resolve_emit_args(event, data)
         self._sio.emit(event_name, payload, **kwargs)
 
-    # call overloads
+    # call overloads (see PEP 747 note in AsyncClientWrapper)
     @overload
     def call(
         self,
         event: BaseModel,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
     @overload
     def call(
         self,
+        event: BaseModel,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    @overload
+    def call(
+        self,
         event: str,
-        data: BaseModel,
+        data: Any = None,
         *,
-        response_model: Type[T],
+        response_model: TypeForm[T],
         **kwargs: Any,
     ) -> T: ...
 
@@ -726,15 +1123,15 @@ class SyncServerWrapper:
         event: str | BaseModel,
         data: Any = None,
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any = None,
         **kwargs: Any,
-    ) -> T | Any:
+    ) -> Any:
         """Emit an event and wait for a response from a client.
 
         Args:
             event: Either a string event name or a BaseModel instance.
             data: Optional data payload (used when event is a string).
-            response_model: Optional Pydantic model type to validate response.
+            response_model: Optional type to validate response against (PEP 747 TypeForm).
             **kwargs: Additional arguments passed to socketio's call.
 
         Returns:
@@ -744,18 +1141,18 @@ class SyncServerWrapper:
         response = self._sio.call(event_name, payload, **kwargs)
         return _validate_response(response, response_model)
 
-    # on overloads
-    @overload
-    def on(self, event: Type[BaseModel]) -> Callable[[Callable], Callable]: ...
-
-    @overload
-    def on(self, event: str) -> Callable[[Callable], Callable]: ...
-
-    def on(self, event: str | Type[BaseModel]) -> Callable[[Callable], Callable]:
+    def on(
+        self,
+        event: str | Type[BaseModel],
+        handler: Callable | None = None,
+        **kwargs: Any,
+    ) -> Callable[[Callable], Callable] | Callable:
         """Register an event handler.
 
         Args:
             event: Either a string event name or a BaseModel class.
+            handler: Optional handler function (if not using as decorator).
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             Decorator that registers the handler with validation.
@@ -767,34 +1164,46 @@ class SyncServerWrapper:
 
         def decorator(handler: Callable) -> Callable:
             wrapped = _create_sync_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped)
+            self._sio.on(event_name, wrapped, **kwargs)
             return handler
 
+        if handler is not None:
+            return decorator(handler)
         return decorator
 
-    def event(self, handler: Callable) -> Callable:
+    def event(self, handler: Callable | None = None, **kwargs: Any) -> Callable:
         """Register an event handler using the function name as the event name.
 
         Args:
             handler: The event handler function.
+            **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
             The original handler (unmodified).
-
-        Example:
-            >>> @sio.event
-            ... def ping(data: Ping) -> Pong:
-            ...     return Pong(reply=data.message)
         """
-        event_name = handler.__name__
-        wrapped = _create_sync_handler_wrapper(handler)
-        self._sio.on(event_name, wrapped)
-        return handler
+
+        def decorator(handler: Callable) -> Callable:
+            event_name = handler.__name__
+            wrapped = _create_sync_handler_wrapper(handler)
+            self._sio.on(event_name, wrapped, **kwargs)
+            return handler
+
+        if handler is not None:
+            return decorator(handler)
+        return decorator
 
 
 # =============================================================================
 # Factory Function
 # =============================================================================
+
+
+@overload
+def wrap(sio: AsyncSimpleClient) -> AsyncSimpleClientWrapper: ...
+
+
+@overload
+def wrap(sio: SimpleClient) -> SimpleClientWrapper: ...
 
 
 @overload
@@ -814,15 +1223,23 @@ def wrap(sio: Server) -> SyncServerWrapper: ...
 
 
 def wrap(
-    sio: AsyncClient | AsyncServer | Client | Server,
-) -> AsyncClientWrapper | AsyncServerWrapper | SyncClientWrapper | SyncServerWrapper:
+    sio: AsyncSimpleClient | SimpleClient | AsyncClient | AsyncServer | Client | Server,
+) -> (
+    AsyncSimpleClientWrapper
+    | SimpleClientWrapper
+    | AsyncClientWrapper
+    | AsyncServerWrapper
+    | SyncClientWrapper
+    | SyncServerWrapper
+):
     """Wrap a socketio instance with typed emit, call, and on methods.
 
     This is the main entry point for the wrapper API. It auto-detects the
     type of socketio instance and returns the appropriate wrapper.
 
     Args:
-        sio: A socketio Client, AsyncClient, Server, or AsyncServer instance.
+        sio: A socketio Client, AsyncClient, Server, AsyncServer,
+            SimpleClient, or AsyncSimpleClient instance.
 
     Returns:
         The appropriate wrapper class for the given socketio instance.
@@ -834,13 +1251,21 @@ def wrap(
         >>> import socketio
         >>> from pydantic_socketio import wrap
         >>>
-        >>> sio = socketio.AsyncClient()
-        >>> typed_sio = wrap(sio)  # Returns AsyncClientWrapper
+        >>> # Wrap standard client
+        >>> tsio = wrap(socketio.AsyncClient())
+        >>> await tsio.emit(Ping(message="hello"))
         >>>
-        >>> # Now use typed methods
-        >>> await typed_sio.emit(Ping(message="hello"))
+        >>> # Wrap simple client
+        >>> tsio = wrap(socketio.SimpleClient())
+        >>> tsio.emit(Ping(message="hello"))
+        >>> event_name, data = tsio.receive(response_model=Pong)
     """
-    if isinstance(sio, AsyncClient):
+    # Check SimpleClient types first (they are subclasses in some sense)
+    if isinstance(sio, AsyncSimpleClient):
+        return AsyncSimpleClientWrapper(sio)
+    elif isinstance(sio, SimpleClient):
+        return SimpleClientWrapper(sio)
+    elif isinstance(sio, AsyncClient):
         return AsyncClientWrapper(sio)
     elif isinstance(sio, AsyncServer):
         return AsyncServerWrapper(sio)
