@@ -281,26 +281,77 @@ def _create_handler_wrapper(handler, is_async: bool):
 
 ### Phase 3: Type Checking Verification
 
-18. [ ] Verify pyright/mypy correctly infers `wrap()` return types
-19. [ ] Verify `emit()` overloads resolve correctly
-20. [ ] Verify `call()` returns correct type with `response_model`
-21. [ ] Verify union types work with type checkers
-22. [ ] Add py.typed marker if not present (already exists)
+18. [ ] Add `typing_extensions>=4.2.0` to dev dependencies
+19. [ ] Create `tests/test_typing.py` with `assert_type` assertions
+20. [ ] Add assertions for `wrap()` return types (all 4 variants)
+21. [ ] Add assertions for `emit()` overload resolution
+22. [ ] Add assertions for `call()` with `response_model` returns `T`
+23. [ ] Add assertions for `call()` with union types (`Pong | Error`)
+24. [ ] Add assertions for `call()` with discriminated unions
+25. [ ] Configure CI to run pyright/mypy on test files
+26. [ ] Verify py.typed marker exists (already present)
 
-### Phase 4: Documentation
+### Phase 4: Configuration & Documentation
 
-23. [ ] Update README with wrapper usage examples
-24. [ ] Add docstrings to all public functions/classes
-25. [ ] Update CHANGELOG.md
+27. [ ] Update `pyproject.toml`: change `requires-python = ">=3.8"` to `>=3.10`
+28. [ ] Add `typing_extensions>=4.2.0` to dev dependencies in `pyproject.toml`
+29. [ ] Update CI workflow to test Python 3.10-3.13 (drop 3.8, 3.9)
+30. [ ] Update README with wrapper usage examples
+31. [ ] Add docstrings to all public functions/classes
+32. [ ] Update CHANGELOG.md with breaking change notice (Python 3.10+ required)
 
 ## Dependencies
 
-No new dependencies required. Uses existing:
-- `pydantic` (validate_call, TypeAdapter, to_jsonable_python)
+Required:
+- `pydantic>=2.0` (validate_call, TypeAdapter, to_jsonable_python, Discriminator)
 - `python-socketio` (Client, AsyncClient, Server, AsyncServer)
+- `typing_extensions>=4.2.0` (for `assert_type` backport in tests)
 
 ## Compatibility
 
 - Wrapper is additive, does not change existing subclass/monkeypatch behavior
 - Works with any existing socketio instance
-- Requires Python 3.8+ (matches existing requirement)
+- **Requires Python 3.10+** (for `|` union syntax at runtime)
+
+### Python Version Rationale
+
+| Feature | Min Version | Notes |
+|---------|-------------|-------|
+| `@overload` | 3.5 | Available in `typing` |
+| `TypeVar` with `bound=` | 3.5 | Available in `typing` |
+| `Union` with `\|` syntax | **3.10** | Runtime requirement (PEP 604) |
+| `Annotated` | 3.9 | Backport available, but 3.10 covers this |
+| `Discriminator` | Pydantic 2.0+ | Not a Python feature |
+| `assert_type()` | 3.11 | Backport via `typing_extensions>=4.2.0` |
+| `ClassVar` | 3.5.3 | Available in `typing` |
+
+The `|` union syntax at runtime is the binding constraint. Users write `response_model=Pong | Error`, which requires Python 3.10+.
+
+## Type Checking Verification
+
+Use `typing_extensions.assert_type()` in tests to verify static type inference:
+
+```python
+from typing_extensions import assert_type
+from pydantic import BaseModel
+
+class Ping(BaseModel):
+    message: str
+
+class Pong(BaseModel):
+    reply: str
+
+# Verify wrap() returns correct type
+sio = wrap(socketio.AsyncClient())
+assert_type(sio, AsyncClientWrapper)
+
+# Verify call() returns correct type
+response = await sio.call(Ping(message="hi"), response_model=Pong)
+assert_type(response, Pong)
+
+# Verify union types
+response = await sio.call(Ping(message="hi"), response_model=Pong | Error)
+assert_type(response, Pong | Error)
+```
+
+These assertions are checked by pyright/mypy at type-check time, not runtime.
