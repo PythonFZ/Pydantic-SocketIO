@@ -56,6 +56,7 @@ response = await typed_sio.call(Ping(message="Hi"), response_model=Pong)
 
 # Call with explicit event name
 response = await typed_sio.call("my-ping", Ping(...), response_model=Pong)
+# IDE knows: response is Pong
 
 # Union response types
 response = await typed_sio.call(Ping(...), response_model=Pong | Error)
@@ -82,6 +83,11 @@ async def handle_ping(data: Ping) -> Pong:  # validation from signature
 # Equivalent explicit form
 @typed_sio.on("ping")
 async def handle_ping(data: Ping) -> Pong:
+    return Pong(reply=data.message)
+
+# Equivalent explicit form
+@typed_sio.event
+async def ping(data: Ping) -> Pong:
     return Pong(reply=data.message)
 ```
 
@@ -125,19 +131,19 @@ Standalone function:
 
 #### Wrapper Classes
 
-Four wrapper classes, one for each socketio type:
+Five wrapper classes, one for each socketio type:
 
 | Class | Wraps | Methods |
 |-------|-------|---------|
-| `SyncClientWrapper` | `Client` | sync `emit`, `call`, `on` |
-| `AsyncClientWrapper` | `AsyncClient` | async `emit`, `call`, `on` |
-| `SyncServerWrapper` | `Server` | sync `emit`, `call`, `on` |
-| `AsyncServerWrapper` | `AsyncServer` | async `emit`, `call`, `on` |
+| `SyncClientWrapper` | `Client` | sync `emit`, `call`, `on`, `event` |
+| `AsyncClientWrapper` | `AsyncClient` | async `emit`, `call`, `on`, `event`  |
+| `SyncServerWrapper` | `Server` | sync `emit`, `call`, `on`, `event`  |
+| `AsyncServerWrapper` | `AsyncServer` | async `emit`, `call`, `on`, `event`  |
 
 Each wrapper:
 - Stores wrapped instance in `self._sio`
 - Delegates unknown attributes via `__getattr__`
-- Overrides `emit`, `call`, adds `on` decorator
+- Overrides `emit`, `call`, adds `on` and `event` decorator
 
 #### `wrap(sio)` Factory
 
