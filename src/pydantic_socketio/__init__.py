@@ -9,6 +9,16 @@ from .pydantic_socketio import (
     monkey_patch as monkey_patch,
 )
 
+# Wrapper API
+from .wrapper import (
+    wrap as wrap,
+    get_event_name as get_event_name,
+    AsyncClientWrapper as AsyncClientWrapper,
+    AsyncServerWrapper as AsyncServerWrapper,
+    SyncClientWrapper as SyncClientWrapper,
+    SyncServerWrapper as SyncServerWrapper,
+)
+
 # import only if fastapi is installed
 try:
     import fastapi as _fastapi  # noqa: F401
