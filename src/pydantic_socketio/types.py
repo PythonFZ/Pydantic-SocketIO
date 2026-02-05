@@ -1,4 +1,4 @@
-from typing import Protocol, Any, Union
+from typing import Any, Protocol, Union
 
 
 class JsonModule(Protocol):

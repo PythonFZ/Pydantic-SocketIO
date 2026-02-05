@@ -1,10 +1,13 @@
 """Unit tests for the wrapper module."""
 
+import asyncio
 from typing import Annotated
 
-import asyncio
 import pytest
 import socketio
+
+# Import test models from conftest
+from conftest import CustomEvent, Error, PascalCaseModel, Ping, Pong, Success
 from pydantic import Discriminator, ValidationError
 
 from pydantic_socketio import (
@@ -23,10 +26,6 @@ from pydantic_socketio.wrapper import (
     _resolve_emit_args,
     _validate_response,
 )
-
-# Import test models from conftest
-from conftest import CustomEvent, Error, PascalCaseModel, Ping, Pong, Success
-
 
 # =============================================================================
 # Tests for get_event_name()

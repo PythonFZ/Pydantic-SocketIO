@@ -1,6 +1,7 @@
 import time
 
 from pydantic import BaseModel
+
 import pydantic_socketio
 
 # pydantic_socketio.monkey_patch()

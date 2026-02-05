@@ -3,21 +3,28 @@ import inspect
 import logging
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, Union
 
-from pydantic import TypeAdapter, validate_call, ValidationError
+from pydantic import TypeAdapter, ValidationError, validate_call
 from pydantic_core import to_jsonable_python
 from socketio import (
-    AsyncServer as OldAsyncServer,
-    Manager,
-    Server as OldServer,
-    Client as OldClient,
     AsyncClient as OldAsyncClient,
+)
+from socketio import (
+    AsyncServer as OldAsyncServer,
+)
+from socketio import (
+    Client as OldClient,
+)
+from socketio import (
+    Manager,
     packet,
 )
-from socketio.base_server import BaseServer as OldBaseServer
+from socketio import (
+    Server as OldServer,
+)
 from socketio.base_client import BaseClient as OldBaseClient
+from socketio.base_server import BaseServer as OldBaseServer
 
 from .types import JsonModule
-
 
 # Save the original functions
 _old_server_on = OldBaseServer.on

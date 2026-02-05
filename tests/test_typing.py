@@ -8,6 +8,9 @@ from typing import Annotated, Any
 from unittest.mock import MagicMock
 
 import socketio
+
+# Import test models from conftest
+from conftest import Error, Ping, Pong, Success
 from pydantic import Discriminator
 from typing_extensions import assert_type
 
@@ -20,10 +23,6 @@ from pydantic_socketio import (
     SyncServerWrapper,
     wrap,
 )
-
-# Import test models from conftest
-from conftest import Error, Ping, Pong, Success
-
 
 # =============================================================================
 # Tests for wrap() return types

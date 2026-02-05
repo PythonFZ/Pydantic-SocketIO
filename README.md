@@ -176,6 +176,47 @@ class CustomEvent(BaseModel):
 await tsio.emit(CustomEvent(data="hello"))
 ```
 
+#### Exception Handlers
+
+Handle exceptions from Socket.IO event handlers with FastAPI-style exception handlers:
+
+```python
+import socketio
+from pydantic import BaseModel, ValidationError
+from pydantic_socketio import wrap, EventContext
+
+class ErrorResponse(BaseModel):
+    error: str
+    message: str
+
+# Wrap an AsyncServer
+tsio = wrap(socketio.AsyncServer(async_mode="asgi"))
+
+@tsio.on("risky_operation")
+async def handle_risky(sid, data: dict):
+    if data.get("fail"):
+        raise ValueError("Operation failed!")
+    return {"status": "success"}
+
+# Register exception handler (global)
+@tsio.exception_handler(ValueError)
+async def handle_value_error(ctx: EventContext, exc: ValueError):
+    # ctx provides: sid, event, namespace, data, sio
+    return ErrorResponse(error="value_error", message=str(exc))
+
+# Namespace-specific exception handler
+@tsio.exception_handler(ValidationError, namespace="/chat")
+async def handle_chat_validation(ctx: EventContext, exc: ValidationError):
+    return ErrorResponse(error="validation_error", message="Invalid chat data")
+```
+
+The `EventContext` provides full context about the event:
+- `sid`: Session ID of the client
+- `event`: Event name that raised the exception  
+- `namespace`: Namespace where the event occurred
+- `data`: Original data sent by the client
+- `sio`: Wrapper instance for emitting events
+
 #### SimpleClient Support
 
 The wrapper also supports `SimpleClient` and `AsyncSimpleClient`, which use `receive()` instead of event handlers:
@@ -294,6 +335,33 @@ sio = FastAPISocketIO(app)
 async def root(sio: SioDep):
     await sio.emit("message", "API root called")
     return {"Hello": "World"}
+```
+
+#### Using Typed Wrapper with FastAPI
+
+The typed wrapper also supports FastAPI dependency injection:
+
+```python
+import socketio
+from typing import Annotated
+from fastapi import FastAPI, Depends
+from pydantic_socketio import wrap, AsyncServerWrapper
+
+app = FastAPI()
+tsio = wrap(socketio.AsyncServer(async_mode="asgi"))
+
+# Create type alias for dependency injection
+SioServer = Annotated[AsyncServerWrapper, Depends(tsio)]
+
+# Use wrapper with Depends()
+@app.post("/notify")
+async def notify(server: SioServer):
+    # server is the typed wrapper with typed emit/call methods
+    await server.emit("notification", {"msg": "hello"})
+    return {"status": "sent"}
+
+# Create combined ASGI app with Socket.IO and FastAPI
+combined_app = socketio.ASGIApp(tsio, app)
 ```
 
 

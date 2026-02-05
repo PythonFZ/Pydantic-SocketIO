@@ -1,7 +1,8 @@
-import requests
 import time
 
+import requests
 from pydantic import BaseModel
+
 import pydantic_socketio
 
 # pydantic_socketio.monkey_patch()

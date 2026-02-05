@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Request
 from typing_extensions import Annotated
 
-from . import AsyncServer, ASGIApp
+from . import ASGIApp, AsyncServer
 
 
 class FastAPISocketIO(AsyncServer):

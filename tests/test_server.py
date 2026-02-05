@@ -1,7 +1,7 @@
-from pydantic import BaseModel
 import socketio
-import pydantic_socketio
+from pydantic import BaseModel
 
+import pydantic_socketio
 
 # pydantic_socketio.monkey_patch()
 

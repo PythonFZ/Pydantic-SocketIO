@@ -4,6 +4,8 @@ This module provides a thin wrapper around socketio instances that adds:
 - Typed emit/call methods with automatic event name derivation
 - Handler registration with Pydantic validation from type hints
 - Support for union and discriminated union response types
+- FastAPI integration via Depends()
+- Exception handlers for Socket.IO events
 
 Note on Union Types (PEP 747):
     The response_model parameter uses TypeForm[T] from PEP 747 for type inference.
@@ -13,8 +15,10 @@ Note on Union Types (PEP 747):
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import wraps
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Type,
@@ -34,7 +38,37 @@ from socketio import (
 )
 from typing_extensions import TypeForm
 
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
 T = TypeVar("T")
+
+
+# =============================================================================
+# Event Context
+# =============================================================================
+
+
+@dataclass
+class EventContext:
+    """Context for Socket.IO event handler exceptions.
+
+    Provides full context about the event that raised the exception,
+    similar to FastAPI's Request object for exception handlers.
+
+    Attributes:
+        sid: Session ID of the client that triggered the event.
+        event: Event name that raised the exception.
+        namespace: Namespace the event was sent to (e.g., "/" or "/chat").
+        data: Original data sent by the client.
+        sio: Wrapper instance for emitting events, accessing rooms, etc.
+    """
+
+    sid: str
+    event: str
+    namespace: str
+    data: Any
+    sio: "AsyncServerWrapper"
 
 
 # =============================================================================
@@ -375,6 +409,33 @@ class AsyncServerWrapper:
 
     Provides typed emit, call, and on methods while passing through all other
     attributes to the underlying AsyncServer instance.
+
+    Also provides FastAPI integration via Depends() support and exception
+    handlers for Socket.IO events.
+
+    Example:
+        >>> import socketio
+        >>> from fastapi import FastAPI, Depends
+        >>> from pydantic_socketio import wrap
+        >>> from typing import Annotated
+        >>>
+        >>> app = FastAPI()
+        >>> tsio = wrap(socketio.AsyncServer(async_mode='asgi'))
+        >>>
+        >>> # Create type alias for dependency injection
+        >>> SioServer = Annotated[AsyncServerWrapper, Depends(tsio)]
+        >>>
+        >>> @app.post("/notify")
+        ... async def notify(server: SioServer):
+        ...     await server.emit("notification", {"msg": "hello"})
+        ...     return {"status": "sent"}
+        >>>
+        >>> @tsio.exception_handler(ValueError)
+        ... async def handle_error(ctx: EventContext, exc: ValueError):
+        ...     return {"error": str(exc)}
+        >>>
+        >>> # Create combined ASGI app
+        >>> combined_app = socketio.ASGIApp(tsio, app)
     """
 
     def __init__(self, sio: AsyncServer) -> None:
@@ -384,10 +445,106 @@ class AsyncServerWrapper:
             sio: The socketio AsyncServer to wrap.
         """
         self._sio = sio
+        self._app: "FastAPI | None" = None
+        # {namespace: {ExceptionType: handler_fn}}
+        # namespace=None means global handler
+        self._exception_handlers: dict[str | None, dict[type[Exception], Callable]] = {}
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying socketio instance."""
         return getattr(self._sio, name)
+
+    def __call__(self) -> AsyncServerWrapper:
+        """Return the wrapper instance for FastAPI Depends().
+
+        This makes the wrapper callable, allowing it to be used directly
+        with FastAPI's dependency injection. Returning the wrapper (rather
+        than the raw server) ensures that routes have access to typed
+        emit() and call() methods.
+
+        Returns:
+            The AsyncServerWrapper instance.
+
+        Example:
+            >>> from typing import Annotated
+            >>> from fastapi import Depends
+            >>>
+            >>> SioServer = Annotated[AsyncServerWrapper, Depends(tsio)]
+            >>>
+            >>> @app.get("/emit")
+            ... async def emit(sio: SioServer):
+            ...     await sio.emit(MyModel(data="hello"))
+        """
+        return self
+
+    def exception_handler(
+        self,
+        exc_type: type[Exception],
+        namespace: str | None = None,
+    ) -> Callable[[Callable], Callable]:
+        """Register an exception handler for Socket.IO events.
+
+        Similar to FastAPI's `@app.exception_handler()` decorator, this allows
+        catching exceptions from event handlers and returning structured responses.
+
+        Args:
+            exc_type: The exception type to handle.
+            namespace: Optional namespace to scope the handler to.
+                       If None, the handler applies globally to all namespaces.
+
+        Returns:
+            Decorator that registers the async handler function.
+
+        Example:
+            >>> @tsio.exception_handler(ValidationError)
+            ... async def handle_validation(ctx: EventContext, exc: ValidationError):
+            ...     return {"error": "validation_error", "details": exc.errors()}
+            >>>
+            >>> @tsio.exception_handler(ValueError, namespace="/chat")
+            ... async def handle_chat_error(ctx: EventContext, exc: ValueError):
+            ...     return {"error": "chat_error", "message": str(exc)}
+        """
+
+        def decorator(handler: Callable) -> Callable:
+            if namespace not in self._exception_handlers:
+                self._exception_handlers[namespace] = {}
+            self._exception_handlers[namespace][exc_type] = handler
+            return handler
+
+        return decorator
+
+    def _find_exception_handler(
+        self,
+        exc: Exception,
+        namespace: str,
+    ) -> Callable | None:
+        """Find the most specific exception handler for the given exception.
+
+        Resolution order (most specific first):
+        1. Namespace-specific handler for exact exception type
+        2. Namespace-specific handler for parent exception type (MRO order)
+        3. Global handler for exact exception type
+        4. Global handler for parent exception type (MRO order)
+
+        Args:
+            exc: The exception that was raised.
+            namespace: The namespace where the event was triggered.
+
+        Returns:
+            The handler function if found, None otherwise.
+        """
+        exc_type = type(exc)
+
+        # Check namespace-specific handlers first, then global (None)
+        for ns in (namespace, None):
+            handlers = self._exception_handlers.get(ns, {})
+
+            # Walk MRO to find matching handler
+            for cls in exc_type.__mro__:
+                if cls in handlers:
+                    return handlers[cls]
+
+        return None
 
     # emit overloads
     @overload
@@ -485,7 +642,10 @@ class AsyncServerWrapper:
         handler: Callable | None = None,
         **kwargs: Any,
     ) -> Callable[[Callable], Callable] | Callable:
-        """Register an event handler.
+        """Register an event handler with exception handling support.
+
+        Wraps handlers with Pydantic validation and exception handling that
+        routes to registered exception handlers.
 
         Args:
             event: Either a string event name or a BaseModel class.
@@ -493,16 +653,42 @@ class AsyncServerWrapper:
             **kwargs: Additional arguments passed to socketio's on (e.g., namespace).
 
         Returns:
-            Decorator that registers the handler with validation.
+            Decorator that registers the handler with validation and exception handling.
         """
         if isinstance(event, type) and issubclass(event, BaseModel):
             event_name = get_event_name(event)
         else:
             event_name = event
 
+        namespace = kwargs.get("namespace", "/")
+
         def decorator(handler: Callable) -> Callable:
-            wrapped = _create_async_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped, **kwargs)
+            # Wrap with validation
+            validated_wrapped = _create_async_handler_wrapper(handler)
+
+            # Add exception handling wrapper
+            @wraps(validated_wrapped)
+            async def exc_wrapped(sid: str, *args: Any, **kw: Any) -> Any:
+                data = args[0] if args else kw.get("data")
+                try:
+                    return await validated_wrapped(sid, *args, **kw)
+                except Exception as exc:
+                    exc_handler = self._find_exception_handler(exc, namespace)
+                    if exc_handler is None:
+                        raise
+                    ctx = EventContext(
+                        sid=sid,
+                        event=event_name,
+                        namespace=namespace,
+                        data=data,
+                        sio=self,
+                    )
+                    result = await exc_handler(ctx, exc)
+                    if isinstance(result, BaseModel):
+                        return to_jsonable_python(result)
+                    return result
+
+            self._sio.on(event_name, exc_wrapped, **kwargs)
             return handler
 
         if handler is not None:
@@ -519,11 +705,36 @@ class AsyncServerWrapper:
         Returns:
             The original handler (unmodified).
         """
+        namespace = kwargs.get("namespace", "/")
 
         def decorator(handler: Callable) -> Callable:
             event_name = handler.__name__
-            wrapped = _create_async_handler_wrapper(handler)
-            self._sio.on(event_name, wrapped, **kwargs)
+            # Wrap with validation
+            validated_wrapped = _create_async_handler_wrapper(handler)
+
+            # Add exception handling wrapper
+            @wraps(validated_wrapped)
+            async def exc_wrapped(sid: str, *args: Any, **kw: Any) -> Any:
+                data = args[0] if args else kw.get("data")
+                try:
+                    return await validated_wrapped(sid, *args, **kw)
+                except Exception as exc:
+                    exc_handler = self._find_exception_handler(exc, namespace)
+                    if exc_handler is None:
+                        raise
+                    ctx = EventContext(
+                        sid=sid,
+                        event=event_name,
+                        namespace=namespace,
+                        data=data,
+                        sio=self,
+                    )
+                    result = await exc_handler(ctx, exc)
+                    if isinstance(result, BaseModel):
+                        return to_jsonable_python(result)
+                    return result
+
+            self._sio.on(event_name, exc_wrapped, **kwargs)
             return handler
 
         if handler is not None:

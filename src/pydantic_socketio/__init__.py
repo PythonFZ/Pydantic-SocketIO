@@ -2,23 +2,48 @@
 from socketio import *  # type: ignore # noqa: F403
 
 from .pydantic_socketio import (
-    Client as Client,
     AsyncClient as AsyncClient,
-    Server as Server,
+)
+from .pydantic_socketio import (
     AsyncServer as AsyncServer,
+)
+from .pydantic_socketio import (
+    Client as Client,
+)
+from .pydantic_socketio import (
+    Server as Server,
+)
+from .pydantic_socketio import (
     monkey_patch as monkey_patch,
+)
+from .wrapper import (
+    AsyncClientWrapper as AsyncClientWrapper,
+)
+from .wrapper import (
+    AsyncServerWrapper as AsyncServerWrapper,
+)
+from .wrapper import (
+    AsyncSimpleClientWrapper as AsyncSimpleClientWrapper,
+)
+from .wrapper import (
+    EventContext as EventContext,
+)
+from .wrapper import (
+    SimpleClientWrapper as SimpleClientWrapper,
+)
+from .wrapper import (
+    SyncClientWrapper as SyncClientWrapper,
+)
+from .wrapper import (
+    SyncServerWrapper as SyncServerWrapper,
+)
+from .wrapper import (
+    get_event_name as get_event_name,
 )
 
 # Wrapper API
 from .wrapper import (
     wrap as wrap,
-    get_event_name as get_event_name,
-    AsyncClientWrapper as AsyncClientWrapper,
-    AsyncServerWrapper as AsyncServerWrapper,
-    AsyncSimpleClientWrapper as AsyncSimpleClientWrapper,
-    SimpleClientWrapper as SimpleClientWrapper,
-    SyncClientWrapper as SyncClientWrapper,
-    SyncServerWrapper as SyncServerWrapper,
 )
 
 # import only if fastapi is installed
@@ -29,6 +54,10 @@ except ImportError:
 else:
     from .fastapi_socketio import (
         FastAPISocketIO as FastAPISocketIO,
-        get_sio as get_sio,
+    )
+    from .fastapi_socketio import (
         SioDep as SioDep,
+    )
+    from .fastapi_socketio import (
+        get_sio as get_sio,
     )
