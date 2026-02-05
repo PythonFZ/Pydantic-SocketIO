@@ -1,52 +1,12 @@
-import asyncio
-import socket
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import aiohttp
 import pytest
-import pytest_asyncio
 import socketio
-import uvicorn
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from pydantic_socketio import AsyncServerWrapper, EventContext, wrap
-
-
-def get_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-@pytest_asyncio.fixture
-async def server_factory() -> AsyncGenerator[Any, None]:
-    servers = []
-    tasks = []
-
-    async def _create_server(app: Any) -> str:
-        port = get_free_port()
-        host = "127.0.0.1"
-        url = f"http://{host}:{port}"
-        config = uvicorn.Config(app, host=host, port=port, log_level="critical")
-        server = uvicorn.Server(config)
-        servers.append(server)
-        task = asyncio.create_task(server.serve())
-        tasks.append(task)
-        # Wait for server to start
-        for _ in range(50):
-            if server.started:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise RuntimeError("Server failed to start")
-        return url
-
-    yield _create_server
-
-    for server in servers:
-        server.should_exit = True
-    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class ErrorResponse(BaseModel):

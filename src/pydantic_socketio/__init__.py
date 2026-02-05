@@ -26,6 +26,9 @@ from .wrapper import (
     AsyncSimpleClientWrapper as AsyncSimpleClientWrapper,
 )
 from .wrapper import (
+    Depends as Depends,
+)
+from .wrapper import (
     EventContext as EventContext,
 )
 from .wrapper import (

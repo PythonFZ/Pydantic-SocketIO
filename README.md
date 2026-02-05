@@ -217,6 +217,51 @@ The `EventContext` provides full context about the event:
 - `data`: Original data sent by the client
 - `sio`: Wrapper instance for emitting events
 
+#### Dependency Injection in Event Handlers
+
+Event handlers support FastAPI-style `Depends()` for injecting dependencies. Both `Annotated` type hints and default values are supported:
+
+```python
+import socketio
+from typing import Annotated
+from fastapi import Depends
+from pydantic import BaseModel
+from pydantic_socketio import wrap
+
+class RoomLeave(BaseModel):
+    room_id: str
+
+class RoomLeaveResponse(BaseModel):
+    status: str
+
+# Define dependencies
+async def get_redis():
+    return my_redis_pool
+
+# Create a reusable type alias
+RedisDep = Annotated[AsyncRedis, Depends(get_redis)]
+
+tsio = wrap(socketio.AsyncServer(async_mode="asgi"))
+
+# Use Annotated style (recommended)
+@tsio.on(RoomLeave)
+async def room_leave(sid: str, data: RoomLeave, redis: RedisDep) -> RoomLeaveResponse:
+    await redis.delete(f"presence:{data.room_id}:{sid}")
+    return RoomLeaveResponse(status="ok")
+
+# Or use default value style
+@tsio.on(RoomLeave)
+async def room_leave(sid: str, data: RoomLeave, redis = Depends(get_redis)) -> RoomLeaveResponse:
+    await redis.delete(f"presence:{data.room_id}:{sid}")
+    return RoomLeaveResponse(status="ok")
+```
+
+Both sync and async dependency functions are supported. When FastAPI is not installed, you can import `Depends` from `pydantic_socketio` directly:
+
+```python
+from pydantic_socketio import Depends
+```
+
 #### SimpleClient Support
 
 The wrapper also supports `SimpleClient` and `AsyncSimpleClient`, which use `receive()` instead of event handlers:

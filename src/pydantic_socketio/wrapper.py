@@ -14,15 +14,21 @@ Note on Union Types (PEP 747):
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import re
 from dataclasses import dataclass
 from functools import wraps
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Callable,
     Type,
     TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
     overload,
 )
 
@@ -37,6 +43,11 @@ from socketio import (
     SimpleClient,
 )
 from typing_extensions import TypeForm
+
+try:
+    from fastapi.params import Depends
+except ImportError:
+    from pydantic_socketio.params import Depends
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -154,19 +165,97 @@ def _validate_response(response: Any, response_model: TypeForm[T] | None) -> T |
     return response
 
 
+def _extract_dependencies(handler: Callable) -> dict[str, Callable]:
+    """Extract Depends() declarations from a handler's type hints and defaults.
+
+    Checks both ``Annotated[T, Depends(...)]`` metadata and plain default values.
+
+    Args:
+        handler: The event handler function.
+
+    Returns:
+        Dict mapping parameter name to the dependency callable.
+    """
+    deps: dict[str, Callable] = {}
+
+    # Check Annotated metadata: param: Annotated[Redis, Depends(get_redis)]
+    try:
+        hints = get_type_hints(handler, include_extras=True)
+    except Exception:
+        hints = {}
+    for name, hint in hints.items():
+        if get_origin(hint) is Annotated:
+            for metadata in get_args(hint)[1:]:
+                if isinstance(metadata, Depends) and metadata.dependency is not None:
+                    deps[name] = metadata.dependency
+                    break
+
+    # Check default values: param: Redis = Depends(get_redis)
+    sig = inspect.signature(handler)
+    for name, param in sig.parameters.items():
+        if name not in deps and isinstance(param.default, Depends):
+            if param.default.dependency is not None:
+                deps[name] = param.default.dependency
+
+    return deps
+
+
+async def _resolve_dependencies(deps: dict[str, Callable]) -> dict[str, Any]:
+    """Resolve dependency callables into their values.
+
+    Supports both sync and async dependency functions.
+
+    Args:
+        deps: Dict mapping parameter name to dependency callable.
+
+    Returns:
+        Dict mapping parameter name to resolved value.
+    """
+    resolved: dict[str, Any] = {}
+    for name, dep_fn in deps.items():
+        if asyncio.iscoroutinefunction(dep_fn):
+            resolved[name] = await dep_fn()
+        else:
+            resolved[name] = dep_fn()
+    return resolved
+
+
 def _create_async_handler_wrapper(handler: Callable) -> Callable:
-    """Wrap async handler with Pydantic validation and serialization.
+    """Wrap async handler with Pydantic validation, DI, and serialization.
 
     Uses pydantic's validate_call to validate input arguments and return value
-    based on the function's type annotations.
+    based on the function's type annotations. Resolves any Depends()
+    dependencies before calling the handler.
 
     Args:
         handler: The async event handler function.
 
     Returns:
-        Wrapped async handler with validation.
+        Wrapped async handler with validation and dependency injection.
     """
-    validated = validate_call(validate_return=True)(handler)
+    deps = _extract_dependencies(handler)
+
+    if deps:
+        # Build an intermediate handler that resolves deps and calls the
+        # original.  Its signature is stripped of dep params so that
+        # validate_call does not try to build pydantic schemas for
+        # arbitrary dep types (e.g. Redis).
+        @wraps(handler)
+        async def _dep_handler(*args: Any, **kwargs: Any) -> Any:
+            resolved = await _resolve_dependencies(deps)
+            kwargs.update(resolved)
+            return await handler(*args, **kwargs)
+
+        sig = inspect.signature(handler)
+        _dep_handler.__signature__ = sig.replace(  # type: ignore[attr-defined]
+            parameters=[p for n, p in sig.parameters.items() if n not in deps]
+        )
+        _dep_handler.__annotations__ = {
+            k: v for k, v in handler.__annotations__.items() if k not in deps
+        }
+        validated = validate_call(validate_return=True)(_dep_handler)
+    else:
+        validated = validate_call(validate_return=True)(handler)
 
     @wraps(handler)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
