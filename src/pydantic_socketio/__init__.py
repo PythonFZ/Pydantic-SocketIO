@@ -32,6 +32,9 @@ from .wrapper import (
     EventContext as EventContext,
 )
 from .wrapper import (
+    SioRequest as SioRequest,
+)
+from .wrapper import (
     SimpleClientWrapper as SimpleClientWrapper,
 )
 from .wrapper import (

@@ -49,6 +49,11 @@ try:
 except ImportError:
     from pydantic_socketio.params import Depends
 
+try:
+    from fastapi import Request
+except ImportError:
+    Request = None  # type: ignore[assignment, misc]
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -80,6 +85,19 @@ class EventContext:
     namespace: str
     data: Any
     sio: "AsyncServerWrapper"
+
+
+@dataclass
+class SioRequest:
+    """Minimal Request-compatible shim for Socket.IO dependency injection.
+
+    Provides ``request.app`` access so that FastAPI-style dependencies
+    like ``def get_db(request: Request)`` can be reused in Socket.IO
+    handlers. Unsupported Request attributes (url, headers, etc.)
+    raise ``AttributeError`` naturally.
+    """
+
+    app: "FastAPI"
 
 
 # =============================================================================
