@@ -803,7 +803,7 @@ class AsyncServerWrapper:
 
         def decorator(handler: Callable) -> Callable:
             # Wrap with validation
-            validated_wrapped = _create_async_handler_wrapper(handler)
+            validated_wrapped = _create_async_handler_wrapper(handler, app=self._app)
 
             # Add exception handling wrapper
             @wraps(validated_wrapped)
@@ -849,7 +849,7 @@ class AsyncServerWrapper:
         def decorator(handler: Callable) -> Callable:
             event_name = handler.__name__
             # Wrap with validation
-            validated_wrapped = _create_async_handler_wrapper(handler)
+            validated_wrapped = _create_async_handler_wrapper(handler, app=self._app)
 
             # Add exception handling wrapper
             @wraps(validated_wrapped)
