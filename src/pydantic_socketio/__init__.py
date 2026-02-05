@@ -32,10 +32,10 @@ from .wrapper import (
     EventContext as EventContext,
 )
 from .wrapper import (
-    SioRequest as SioRequest,
+    SimpleClientWrapper as SimpleClientWrapper,
 )
 from .wrapper import (
-    SimpleClientWrapper as SimpleClientWrapper,
+    SioRequest as SioRequest,
 )
 from .wrapper import (
     SyncClientWrapper as SyncClientWrapper,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from typing import (
@@ -218,35 +219,65 @@ def _extract_dependencies(handler: Callable) -> dict[str, Callable]:
     return deps
 
 
-async def _resolve_dependencies(deps: dict[str, Callable]) -> dict[str, Any]:
+async def _resolve_dependencies(
+    deps: dict[str, Callable],
+    *,
+    app: Any = None,
+    stack: AsyncExitStack,
+) -> dict[str, Any]:
     """Resolve dependency callables into their values.
 
-    Supports both sync and async dependency functions.
+    Supports sync/async callables and sync/async generators.
+    Generator dependencies are wrapped as context managers and registered
+    with the ``AsyncExitStack`` so teardown runs automatically when the
+    stack exits (following FastAPI's pattern).
+
+    If a dependency's signature includes a parameter typed as
+    ``Request``, a ``SioRequest`` shim is injected automatically.
 
     Args:
         deps: Dict mapping parameter name to dependency callable.
+        app: Optional FastAPI app instance for Request injection.
+        stack: AsyncExitStack for managing generator dependency lifecycle.
 
     Returns:
         Dict mapping parameter name to resolved value.
     """
     resolved: dict[str, Any] = {}
+
     for name, dep_fn in deps.items():
+        # Build kwargs: inject SioRequest for Request-typed params
+        kwargs: dict[str, Any] = {}
+        if Request is not None and app is not None:
+            for pname, param in inspect.signature(dep_fn).parameters.items():
+                if param.annotation is Request:
+                    kwargs[pname] = SioRequest(app=app)
+
         if asyncio.iscoroutinefunction(dep_fn):
-            resolved[name] = await dep_fn()
+            resolved[name] = await dep_fn(**kwargs)
+        elif inspect.isasyncgenfunction(dep_fn):
+            cm = asynccontextmanager(dep_fn)(**kwargs)
+            resolved[name] = await stack.enter_async_context(cm)
+        elif inspect.isgeneratorfunction(dep_fn):
+            cm = contextmanager(dep_fn)(**kwargs)
+            resolved[name] = stack.enter_context(cm)
         else:
-            resolved[name] = dep_fn()
+            resolved[name] = dep_fn(**kwargs)
+
     return resolved
 
 
-def _create_async_handler_wrapper(handler: Callable) -> Callable:
+def _create_async_handler_wrapper(handler: Callable, *, app: Any = None) -> Callable:
     """Wrap async handler with Pydantic validation, DI, and serialization.
 
     Uses pydantic's validate_call to validate input arguments and return value
     based on the function's type annotations. Resolves any Depends()
-    dependencies before calling the handler.
+    dependencies before calling the handler. Generator dependencies are
+    managed via AsyncExitStack for automatic cleanup.
 
     Args:
         handler: The async event handler function.
+        app: Optional FastAPI app for Request injection in dependencies.
 
     Returns:
         Wrapped async handler with validation and dependency injection.
@@ -254,18 +285,16 @@ def _create_async_handler_wrapper(handler: Callable) -> Callable:
     deps = _extract_dependencies(handler)
 
     if deps:
-        # Build an intermediate handler that resolves deps and calls the
-        # original.  Its signature is stripped of dep params so that
-        # validate_call does not try to build pydantic schemas for
-        # arbitrary dep types (e.g. Redis).
+
         @wraps(handler)
         async def _dep_handler(*args: Any, **kwargs: Any) -> Any:
-            resolved = await _resolve_dependencies(deps)
-            kwargs.update(resolved)
-            return await handler(*args, **kwargs)
+            async with AsyncExitStack() as stack:
+                resolved = await _resolve_dependencies(deps, app=app, stack=stack)
+                kwargs.update(resolved)
+                return await handler(*args, **kwargs)
 
         sig = inspect.signature(handler)
-        _dep_handler.__signature__ = sig.replace(  # type: ignore[attr-defined]
+        _dep_handler.__signature__ = sig.replace(
             parameters=[p for n, p in sig.parameters.items() if n not in deps]
         )
         _dep_handler.__annotations__ = {
