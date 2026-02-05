@@ -40,3 +40,31 @@ def test_sio_request_no_url():
     req = SioRequest(app=FakeApp())
     with pytest.raises(AttributeError):
         _ = req.url
+
+
+# ---------------------------------------------------------------------------
+# wrap() app kwarg tests
+# ---------------------------------------------------------------------------
+
+import socketio
+
+from pydantic_socketio import wrap
+
+
+def test_wrap_with_app():
+    """wrap(sio, app=app) stores app on the wrapper."""
+    app = FakeApp()
+    tsio = wrap(socketio.AsyncServer(async_mode="asgi"), app=app)
+    assert tsio._app is app
+
+
+def test_wrap_without_app():
+    """wrap(sio) without app sets _app to None."""
+    tsio = wrap(socketio.AsyncServer(async_mode="asgi"))
+    assert tsio._app is None
+
+
+def test_wrap_app_ignored_for_client():
+    """wrap() with app kwarg on a client type ignores it."""
+    tsio = wrap(socketio.AsyncClient(), app=FakeApp())
+    assert not hasattr(tsio, "_app") or tsio._app is None

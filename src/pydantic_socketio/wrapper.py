@@ -545,14 +545,17 @@ class AsyncServerWrapper:
         >>> combined_app = socketio.ASGIApp(tsio, app)
     """
 
-    def __init__(self, sio: AsyncServer) -> None:
+    def __init__(self, sio: AsyncServer, app: "FastAPI | None" = None) -> None:
         """Initialize wrapper with an AsyncServer instance.
 
         Args:
             sio: The socketio AsyncServer to wrap.
+            app: Optional FastAPI application instance. When provided,
+                dependencies that accept a ``Request`` parameter will
+                receive a shim with ``request.app`` pointing to this instance.
         """
         self._sio = sio
-        self._app: "FastAPI | None" = None
+        self._app = app
         # {namespace: {ExceptionType: handler_fn}}
         # namespace=None means global handler
         self._exception_handlers: dict[str | None, dict[type[Exception], Callable]] = {}
@@ -1517,31 +1520,33 @@ class SyncServerWrapper:
 
 
 @overload
-def wrap(sio: AsyncSimpleClient) -> AsyncSimpleClientWrapper: ...
+def wrap(sio: AsyncSimpleClient, *, app: Any = None) -> AsyncSimpleClientWrapper: ...
 
 
 @overload
-def wrap(sio: SimpleClient) -> SimpleClientWrapper: ...
+def wrap(sio: SimpleClient, *, app: Any = None) -> SimpleClientWrapper: ...
 
 
 @overload
-def wrap(sio: AsyncClient) -> AsyncClientWrapper: ...
+def wrap(sio: AsyncClient, *, app: Any = None) -> AsyncClientWrapper: ...
 
 
 @overload
-def wrap(sio: AsyncServer) -> AsyncServerWrapper: ...
+def wrap(sio: AsyncServer, *, app: Any = None) -> AsyncServerWrapper: ...
 
 
 @overload
-def wrap(sio: Client) -> SyncClientWrapper: ...
+def wrap(sio: Client, *, app: Any = None) -> SyncClientWrapper: ...
 
 
 @overload
-def wrap(sio: Server) -> SyncServerWrapper: ...
+def wrap(sio: Server, *, app: Any = None) -> SyncServerWrapper: ...
 
 
 def wrap(
     sio: AsyncSimpleClient | SimpleClient | AsyncClient | AsyncServer | Client | Server,
+    *,
+    app: Any = None,
 ) -> (
     AsyncSimpleClientWrapper
     | SimpleClientWrapper
@@ -1558,6 +1563,9 @@ def wrap(
     Args:
         sio: A socketio Client, AsyncClient, Server, AsyncServer,
             SimpleClient, or AsyncSimpleClient instance.
+        app: Optional FastAPI application instance. When provided,
+            dependencies that accept a ``Request`` parameter will
+            receive a shim with ``request.app`` pointing to this instance.
 
     Returns:
         The appropriate wrapper class for the given socketio instance.
@@ -1586,7 +1594,7 @@ def wrap(
     elif isinstance(sio, AsyncClient):
         return AsyncClientWrapper(sio)
     elif isinstance(sio, AsyncServer):
-        return AsyncServerWrapper(sio)
+        return AsyncServerWrapper(sio, app=app)
     elif isinstance(sio, Client):
         return SyncClientWrapper(sio)
     elif isinstance(sio, Server):
