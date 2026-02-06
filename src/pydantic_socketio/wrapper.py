@@ -46,7 +46,12 @@ from socketio import (
 from typing_extensions import TypeForm
 
 try:
-    from fastapi.params import Depends
+    from fastapi.params import Depends as _DependsClass
+except ImportError:
+    from pydantic_socketio.params import _DependsBase as _DependsClass
+
+try:
+    from fastapi import Depends
 except ImportError:
     from pydantic_socketio.params import Depends
 
@@ -98,7 +103,7 @@ class SioRequest:
     raise ``AttributeError`` naturally.
     """
 
-    app: "FastAPI"
+    app: Any
 
 
 # =============================================================================
@@ -205,14 +210,17 @@ def _extract_dependencies(handler: Callable) -> dict[str, Callable]:
     for name, hint in hints.items():
         if get_origin(hint) is Annotated:
             for metadata in get_args(hint)[1:]:
-                if isinstance(metadata, Depends) and metadata.dependency is not None:
+                if (
+                    isinstance(metadata, _DependsClass)
+                    and metadata.dependency is not None
+                ):
                     deps[name] = metadata.dependency
                     break
 
     # Check default values: param: Redis = Depends(get_redis)
     sig = inspect.signature(handler)
     for name, param in sig.parameters.items():
-        if name not in deps and isinstance(param.default, Depends):
+        if name not in deps and isinstance(param.default, _DependsClass):
             if param.default.dependency is not None:
                 deps[name] = param.default.dependency
 

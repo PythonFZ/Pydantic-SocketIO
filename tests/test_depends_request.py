@@ -1,7 +1,7 @@
 """Tests for Request auto-injection and generator dependencies."""
 
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, AsyncIterator
 
 import pytest
@@ -28,11 +28,7 @@ class FakeState:
 
 @dataclass
 class FakeApp:
-    state: FakeState = None
-
-    def __post_init__(self):
-        if self.state is None:
-            self.state = FakeState()
+    state: FakeState = field(default_factory=FakeState)
 
 
 def test_sio_request_exposes_app():
@@ -53,7 +49,7 @@ def test_sio_request_no_url():
     """Unsupported attrs raise AttributeError."""
     req = SioRequest(app=FakeApp())
     with pytest.raises(AttributeError):
-        _ = req.url
+        _ = req.url  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -180,10 +176,10 @@ async def test_on_decorator_injects_request(server_factory):
     def get_prefix(request: Request) -> str:
         return request.app.state.prefix
 
-    PrefixDep = Annotated[str, Depends(get_prefix)]
-
     @tsio.on(EchoRequest)
-    async def handle(sid: str, data: EchoRequest, prefix: PrefixDep) -> EchoResponse:
+    async def handle(
+        sid: str, data: EchoRequest, prefix: Annotated[str, Depends(get_prefix)]
+    ) -> EchoResponse:
         return EchoResponse(reply=f"{prefix}, {data.msg}")
 
     url = await server_factory(socketio.ASGIApp(tsio, app))
@@ -214,10 +210,10 @@ async def test_on_decorator_async_generator_dep(server_factory):
         yield f"session:{request.app.state.db_url}"
         cleanup_called = True
 
-    SessionDep = Annotated[str, Depends(get_session)]
-
     @tsio.on(EchoRequest)
-    async def handle(sid: str, data: EchoRequest, session: SessionDep) -> EchoResponse:
+    async def handle(
+        sid: str, data: EchoRequest, session: Annotated[str, Depends(get_session)]
+    ) -> EchoResponse:
         return EchoResponse(reply=session)
 
     url = await server_factory(socketio.ASGIApp(tsio, app))
@@ -245,7 +241,9 @@ async def test_event_decorator_injects_request(server_factory):
 
     @tsio.event
     async def echo_request(
-        sid: str, data: EchoRequest, prefix: str = Depends(get_prefix)
+        sid: str,
+        data: EchoRequest,
+        prefix: str = Depends(get_prefix),
     ) -> EchoResponse:
         return EchoResponse(reply=f"{prefix}, {data.msg}")
 
@@ -279,7 +277,7 @@ async def test_connect_handler_with_depends(server_factory):
     async def on_connect(
         sid: str,
         environ: dict,
-        auth: dict = None,
+        auth: dict | None = None,
         connections: list = Depends(get_connections),
     ) -> None:
         connections.append(sid)
@@ -309,11 +307,11 @@ async def test_disconnect_handler_with_depends(server_factory):
     def get_disconnections(request: Request) -> list:
         return request.app.state.disconnections
 
-    DisconnectionsDep = Annotated[list, Depends(get_disconnections)]
-
     @tsio.on("disconnect")
     async def on_disconnect(
-        sid: str, reason: str, disconnections: DisconnectionsDep
+        sid: str,
+        reason: str,
+        disconnections: Annotated[list, Depends(get_disconnections)],
     ) -> None:
         disconnections.append(sid)
 
